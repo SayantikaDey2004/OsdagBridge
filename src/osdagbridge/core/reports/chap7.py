@@ -1,7 +1,19 @@
-def ch7_quantities(input_dict):
+from osdagbridge.core.reports.report_utils import _fig_embed
+
+
+def ch7_quantities(input_dict, fig_paths=None):
+    fig_paths = fig_paths or {}
     return r"""
 \chapter{Material Take-off \& Quantity Summary}
 \label{ch:material-takeoff}
+
+\vspace{0.5em}
+""" + _fig_embed(
+        fig_paths.get("material_quantity_summary"),
+        "Material Quantity Summary",
+        width=r"0.92\textwidth",
+        height=r"0.34\textheight",
+    ) + r"""
 
 \noindent\textbf{Table 7.1  Bill of Materials (Steel, Concrete, and Reinforcement Quantities)}
 

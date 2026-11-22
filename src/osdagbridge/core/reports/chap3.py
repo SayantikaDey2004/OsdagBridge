@@ -4,6 +4,14 @@
 # =============================================================================
 
 from osdagbridge.core.utils.common import (
+    KEY_BL_IRC_70R_BOGIE,
+    KEY_BL_IRC_70R_TRACKED,
+    KEY_BL_IRC_70R_WHEELED,
+    KEY_BL_IRC_AA_TRACKED,
+    KEY_BL_IRC_AA_WHEELED,
+    KEY_BL_IRC_CLASS_A,
+    KEY_BL_IRC_CLASS_FATIGUE,
+    KEY_BL_IRC_CLASS_SV,
     KEY_CB_LOAD,
     KEY_LL_CUSTOM_VEHICLES,
     KEY_LL_FOOTPATH_PRESSURE_MODE,
@@ -16,6 +24,7 @@ from osdagbridge.core.utils.common import (
     KEY_LL_IRC_CLASS_A,
     KEY_LL_IRC_CLASS_FATIGUE,
     KEY_LL_IRC_CLASS_SV,
+    KEY_LL_ECCENTRICITY,
     KEY_MATERIAL_DECK_DENSITY,
     KEY_MATERIAL_GIRDER_DENSITY,
     KEY_PL_SELF_WEIGHT_FACTOR,
@@ -82,8 +91,18 @@ def ch3_loads(input_dict):
                 vehicles.append(c['name'])
             elif isinstance(c, str):
                 vehicles.append(c)
-                
-    vehicles_str = ", ".join(vehicles) if vehicles else "None"
+
+    vehicle_rows = []
+    vehicle_definitions = [
+        ("Class A", KEY_LL_IRC_CLASS_A, KEY_BL_IRC_CLASS_A, "class_a"),
+        ("Class AA Wheeled", KEY_LL_IRC_AA_WHEELED, KEY_BL_IRC_AA_WHEELED, None),
+        ("Class AA Tracked", KEY_LL_IRC_AA_TRACKED, KEY_BL_IRC_AA_TRACKED, None),
+        ("Class 70R Wheeled", KEY_LL_IRC_70R_WHEELED, KEY_BL_IRC_70R_WHEELED, "70r_wheeled"),
+        ("Class 70R Tracked", KEY_LL_IRC_70R_TRACKED, KEY_BL_IRC_70R_TRACKED, "70r_tracked"),
+        ("Class 70R Bogie", KEY_LL_IRC_70R_BOGIE, KEY_BL_IRC_70R_BOGIE, None),
+        ("Class SV", KEY_LL_IRC_CLASS_SV, KEY_BL_IRC_CLASS_SV, "sv"),
+        ("Class Fatigue", KEY_LL_IRC_CLASS_FATIGUE, KEY_BL_IRC_CLASS_FATIGUE, "fatigue"),
+    ]
 
     from osdagbridge.core.utils.codes.irc6_2017 import IRC6_2017
     span = input_dict.get(KEY_SPAN)
@@ -129,6 +148,101 @@ def ch3_loads(input_dict):
             braking_force_str = "N/A"
     else:
         braking_force_str = "N/A"
+
+    eccentricity = input_dict.get(KEY_LL_ECCENTRICITY)
+    try:
+        eccentricity_str = (
+            f"{float(eccentricity):.3f} m"
+            if eccentricity not in (None, "")
+            else "N/A"
+        )
+    except (TypeError, ValueError):
+        eccentricity_str = "N/A"
+
+    def _vehicle_total_load(definition):
+        try:
+            if definition == "class_a":
+                data = IRC6_2017.cl_204_1_ClassA_vehicle()
+                return sum(float(v) for v in data["wheel_loads"]) / 1000.0
+            if definition == "70r_wheeled":
+                data = IRC6_2017.cl_204_1_Class70R_vehicle_wheel()
+                return sum(float(v) for v in data["wheel_loads"]) / 1000.0
+            if definition == "70r_tracked":
+                data = IRC6_2017.cl_204_1_Class70R_vehicle_track()
+                udl = float(data["wheel_loads_udl"])
+                length = float(data["x"][1]) - float(data["x"][0])
+                return udl * length * 2.0 / 1000.0
+            if definition == "sv":
+                data = IRC6_2017.cl_204_5_1_special_vehicle()
+                return float(data["total_load_kN"])
+            if definition == "fatigue":
+                data = IRC6_2017.cl_204_6_fatigue_load()
+                return sum(float(v) for v in data["wheel_loads"]) / 1000.0
+        except Exception:
+            return None
+        return None
+
+    def _vehicle_impact_factor(definition):
+        if span in (None, ""):
+            return "N/A"
+        try:
+            factor_span = float(span)
+            if definition == "class_a":
+                return f"{1.0 + IRC6_2017.cl_208_2_impact_factor(factor_span):.3f}"
+            if definition in ("70r_wheeled", "70r_tracked"):
+                return f"{1.0 + IRC6_2017.cl_208_3_impact_factor(factor_span):.3f}"
+        except (TypeError, ValueError):
+            pass
+        return "N/A"
+
+    selected_vehicle_rows = []
+    for name, key, braking_key, definition in vehicle_definitions:
+        if not input_dict.get(key):
+            continue
+        total_load = _vehicle_total_load(definition)
+        total_load_str = f"{total_load:.2f} kN" if total_load is not None else "Not defined by existing IRC 6 data"
+        braking_selected = input_dict.get(braking_key, input_dict.get(key))
+        braking_value = _tex(braking_force_str) if braking_selected else "N/A"
+        selected_vehicle_rows.append(
+            f"{_tex(name)} & {total_load_str} & "
+            f"{_vehicle_impact_factor(definition)} & "
+            f"{'Yes' if braking_selected else 'No'} & {braking_value} & "
+            f"{eccentricity_str} " + r"\\[6pt]" + "\n\\hline"
+        )
+
+    if custom and isinstance(custom, list):
+        for custom_vehicle in custom:
+            if not isinstance(custom_vehicle, dict):
+                continue
+            name = custom_vehicle.get("name")
+            if not name:
+                continue
+            axle_loads = custom_vehicle.get("axle_loads")
+            if axle_loads:
+                try:
+                    total_load = sum(float(v) for v in axle_loads)
+                except (TypeError, ValueError):
+                    total_load = None
+            else:
+                axles = custom_vehicle.get("axles", [])
+                try:
+                    total_load = sum(float(a.get("load_kN", 0.0)) for a in axles)
+                except (TypeError, AttributeError, ValueError):
+                    total_load = None
+            total_load_str = f"{total_load:.2f} kN" if total_load is not None else "N/A"
+            selected_vehicle_rows.append(
+                f"{_tex(name)} & {total_load_str} & "
+                f"N/A & N/A & N/A & "
+                f"{eccentricity_str} " + r"\\[6pt]" + "\n\\hline"
+            )
+
+    if not selected_vehicle_rows:
+        selected_vehicle_rows.append(
+            r"\textnormal{No vehicle selected} & --- & --- & --- & --- & " +
+            eccentricity_str + r" \\[6pt]" + "\n\\hline"
+        )
+
+    vehicle_rows_str = "\n".join(selected_vehicle_rows)
 
     fp_mode  = input_dict.get(KEY_LL_FOOTPATH_PRESSURE_MODE, "")
     fp_value = input_dict.get(KEY_LL_FOOTPATH_PRESSURE_VALUE, "")
@@ -300,18 +414,23 @@ This section summarizes all loads applied to the bridge and the load combination
 \end{longtable}
 
 \vspace{1em}
+\begin{longtable}{|L{3.0cm}|C{2.2cm}|C{2.2cm}|C{2.5cm}|C{1.6cm}|C{2.8cm}|}
+\caption{\textbf{Vehicle Live Loads (LL)}}
+\hline
+\textbf{Vehicle} & \textbf{Total Load (kN)} & \textbf{Impact Factor} & \textbf{Braking Load} & \textbf{Value} & \textbf{Eccentricity} \\[6pt]
+\hline
+""" + vehicle_rows_str + r"""
+\end{longtable}
+
+\vspace{1em}
 \begin{longtable}{|L{5.5cm}|p{10.0cm}|}
-\caption{\textbf{Live Loads (LL)}}
+\caption{\textbf{Footpath / Footway Live Load}}
 \hline
-\textbf{parameter} & \textbf{value} \\
+\textbf{Parameter} & \textbf{Value / Unit} \\
 \hline
-\textnormal{Vehicles Considered} & """ + _tex(vehicles_str) + r""" \\[6pt]
+\textnormal{Pressure Mode} & """ + _render_value(input_dict, KEY_LL_FOOTPATH_PRESSURE_MODE) + r""" \\[6pt]
 \hline
-\textnormal{Impact Factor (IRC 6)} & """ + _tex(impact_factor_str) + r""" \\[6pt]
-\hline
-\textnormal{Braking Load (IRC 6)} & """ + _tex(braking_force_str) + r""" \\[6pt]
-\hline
-\textnormal{Footpath Live Load (if applicable)} & """ + (_render_value(input_dict, KEY_LL_FOOTPATH_PRESSURE_VALUE, ' kN/m\\textsuperscript{2}')) + r""" \\[6pt]
+\textnormal{Footway Live Pressure} & """ + _tex(fp_str) + r""" \\[6pt]
 \hline
 \end{longtable}
 

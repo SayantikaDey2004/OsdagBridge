@@ -89,6 +89,12 @@ def calculate_material_quantities(inputs: dict, outputs: dict) -> dict:
         "crash_barrier_vol_total": "N.A.",
         "crash_barrier_wt_single": "N.A.",
         "crash_barrier_wt_total": "N.A.",
+
+        "end_diaphragm_vol_formula": r"\placeholder{Section Area $\times$ Length}",
+        "end_diaphragm_qty": "N.A.",
+        "end_diaphragm_vol_total": "N.A.",
+        "end_diaphragm_wt_single": "N.A.",
+        "end_diaphragm_wt_total": "N.A.",
     }
     try:
         span_val = inputs.get(KEY_SPAN)
@@ -329,6 +335,55 @@ def calculate_material_quantities(inputs: dict, outputs: dict) -> dict:
                 quantities[f"{prefix}_vol_total"] = "N.A."
                 quantities[f"{prefix}_wt_single"] = "N.A."
                 quantities[f"{prefix}_wt_total"] = "N.A."
+
+        # 6. End diaphragms — use the designed section areas and bridge geometry.
+        end_forces = outputs.get("end_diaphragm_forces_dict", {}) or {}
+        end_geometry = end_forces.get("geometry", {}) or {}
+        end_pairs = end_forces.get("pairs", {}) or {}
+        total_end_volume = 0.0
+        end_member_count = 0
+        for pair in end_pairs.keys():
+            pair = str(pair)
+            diag_area_cm2 = outputs.get(
+                f"transverse_member_design.ed.section_properties.end_diaphragm.{pair}.A"
+            )
+            top_area_cm2 = outputs.get(
+                f"transverse_member_design.ed.section_properties.top_chord.{pair}.A"
+            )
+            bot_area_cm2 = outputs.get(
+                f"transverse_member_design.ed.section_properties.bottom_chord.{pair}.A"
+            )
+            try:
+                diagonal_length_m = float(end_geometry.get("diagonal_length_m", 0.0))
+                horizontal_length_m = float(end_geometry.get("horiz_proj_m", 0.0))
+            except (TypeError, ValueError):
+                diagonal_length_m = 0.0
+                horizontal_length_m = 0.0
+
+            for area_cm2, length_m, member_type in (
+                (diag_area_cm2, diagonal_length_m, "diagonal"),
+                (top_area_cm2, horizontal_length_m, "top chord"),
+                (bot_area_cm2, horizontal_length_m, "bottom chord"),
+            ):
+                try:
+                    area_m2 = float(area_cm2) / 10000.0
+                except (TypeError, ValueError):
+                    area_m2 = 0.0
+                if area_m2 > 0.0 and length_m > 0.0:
+                    count = 2.0 if member_type == "diagonal" else 1.0
+                    end_location_factor = 2.0
+                    total_end_volume += area_m2 * length_m * count * end_location_factor
+                    end_member_count += int(count * end_location_factor)
+
+        if total_end_volume > 0.0:
+            end_weight_mt = total_end_volume * 7.85
+            quantities["end_diaphragm_vol_formula"] = (
+                r"$\sum (\text{Section Area} \times \text{Member Length})$"
+            )
+            quantities["end_diaphragm_qty"] = str(end_member_count)
+            quantities["end_diaphragm_vol_total"] = f"{total_end_volume:.3f}"
+            quantities["end_diaphragm_wt_single"] = f"{end_weight_mt / max(end_member_count, 1):.3f}"
+            quantities["end_diaphragm_wt_total"] = f"{end_weight_mt:.3f}"
 
         # 6. Crash Barrier (Cu.m) and Weight (MT)
         KEY_CB_AREA = "typical_section.crash_barrier.area"

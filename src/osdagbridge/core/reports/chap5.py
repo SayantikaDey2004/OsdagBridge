@@ -141,11 +141,11 @@ from osdagbridge.core.utils.common import (
     KEY_UTIL_SHEAR
 )
 
-from osdagbridge.core.reports.report_utils import _tex, _render_value, get_girder_entries
+from osdagbridge.core.reports.report_utils import _tex, _render_value, get_girder_entries, _fig_embed
 
 if TYPE_CHECKING:
     pass
-def ch5_design_checks(checks_data, bridge) -> str:
+def ch5_design_checks(checks_data, bridge, fig_paths=None) -> str:
     """Chapter 5 — Design Checks.
 
     Parameters
@@ -155,6 +155,7 @@ def ch5_design_checks(checks_data, bridge) -> str:
     bridge : ReportDataBridge
         Provides input_dict, output_dict, and helper methods.
     """
+    fig_paths = fig_paths or {}
     girder_entries = get_girder_entries(bridge.input_dict)
     if not girder_entries:
         n = int(bridge.input_dict.get(KEY_TS_NO_OF_GIRDERS, 1))
@@ -1490,6 +1491,14 @@ End diaphragms at the supports transfer transverse loads to the bearings, restra
 \section{Overall Design Check Summary}
 \label{sec:overall-summary}
 % ===========================
+
+\vspace{1em}
+""" + _fig_embed(
+        fig_paths.get("utilization_ratio_summary"),
+        "Overall Utilization Ratio Summary",
+        width=r"0.92\textwidth",
+        height=r"0.34\textheight",
+    ) + r"""
 
 \vspace{1em}
 \begin{longtable}{|C{3.4cm}|L{4.5cm}|C{2.3cm}|C{2.3cm}|>{\centering\arraybackslash}p{1.6cm}|}

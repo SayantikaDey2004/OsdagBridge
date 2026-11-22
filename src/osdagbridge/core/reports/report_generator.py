@@ -103,7 +103,7 @@
 #                                                          else → CustomMessageBox("Report Saved")
 #==============================================================================
 
-import os, shutil, logging, datetime, tempfile, subprocess
+import os, shutil, logging, datetime, tempfile, subprocess, math
 from dataclasses import dataclass, field
 from typing import Optional, List, Literal
 
@@ -152,11 +152,25 @@ def preamble(project_name, job_number, report_date, report_version='Rev 0'):
     jn = _tex(job_number)
     rd = _tex(report_date)
     rv = _tex(report_version)
+    from osdagbridge.core.reports.styles import PAGE_STYLE, TABLE_STYLE, OSDAG_GREEN
+    geometry = (
+        f"left={PAGE_STYLE.left_in}in,right={PAGE_STYLE.right_in}in,"
+        f"top={PAGE_STYLE.top_in}in,bottom={PAGE_STYLE.bottom_in}in,"
+        f"headheight={PAGE_STYLE.head_height}pt,"
+        f"headsep={PAGE_STYLE.head_sep}pt,footskip={PAGE_STYLE.foot_skip}pt"
+    )
+    tabcolsep = TABLE_STYLE.column_padding_pt
+    rowstretch = TABLE_STYLE.row_stretch
+    extrarowheight = TABLE_STYLE.extra_row_height_pt
+    rulewidth = TABLE_STYLE.rule_width_pt
+    ltpre = TABLE_STYLE.pre_skip_pt
+    ltpost = TABLE_STYLE.post_skip_pt
+    remaining = TABLE_STYLE.min_remaining_baselines
     return r"""
-\documentclass[12pt,a4paper]{report}
+\documentclass[12pt,""" + PAGE_STYLE.paper + r"""]{report}
 
 % Packages
-\usepackage[a4paper, margin=1in]{geometry}
+\usepackage[""" + PAGE_STYLE.paper + r""", """ + geometry + r"""]{geometry}
 \usepackage{graphicx}
 \usepackage{amsmath}
 \usepackage{amssymb}
@@ -193,20 +207,24 @@ def preamble(project_name, job_number, report_date, report_version='Rev 0'):
 \numberwithin{table}{chapter}
 \numberwithin{figure}{chapter}
 % Table layout and spacing: consistent padding, row height, and longtable pre/post skips
-\setlength{\tabcolsep}{6pt}
-\renewcommand{\arraystretch}{1.12}
-\setlength{\LTpre}{0pt}
-\setlength{\LTpost}{6pt}
+\setlength{\tabcolsep}{""" + str(tabcolsep) + r"""pt}
+\renewcommand{\arraystretch}{""" + str(rowstretch) + r"""}
+\setlength{\LTpre}{""" + str(ltpre) + r"""pt}
+\setlength{\LTpost}{""" + str(ltpost) + r"""pt}
 % Table rules (outline thickness) and small extra row height for clarity
-\setlength{\arrayrulewidth}{0.5pt}
-\setlength{\extrarowheight}{0.6pt}
+\setlength{\arrayrulewidth}{""" + str(rulewidth) + r"""pt}
+\setlength{\extrarowheight}{""" + str(extrarowheight) + r"""pt}
+\raggedbottom
+\clubpenalty=10000
+\widowpenalty=10000
+\displaywidowpenalty=10000
 
 % Prevent tables from overflowing past the page bottom:
 % if fewer than 5 baseline-skips remain, break to the next page first.
-\BeforeBeginEnvironment{table}{\needspace{5\baselineskip}}
-\BeforeBeginEnvironment{longtable}{\needspace{5\baselineskip}}
+\BeforeBeginEnvironment{table}{\needspace{""" + str(remaining) + r"""\baselineskip}}
+\BeforeBeginEnvironment{longtable}{\needspace{""" + str(remaining) + r"""\baselineskip}}
 
-\definecolor{osdagGreen}{HTML}{91B014}
+\definecolor{osdagGreen}{HTML}{""" + OSDAG_GREEN.lstrip('#') + r"""}
 
 \fancypagestyle{main}{
   \fancyhf{}
@@ -344,10 +362,13 @@ def title_page(m, osdag_logo, org_logo):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def toc_section():
+    from osdagbridge.core.reports.styles import TYPOGRAPHY_STYLE
+    chapter_pt = TYPOGRAPHY_STYLE.chapter_pt
+    section_pt = TYPOGRAPHY_STYLE.section_pt
     return r"""
 % Chapter / TOC Formatting
 \titleformat{\chapter}[block]
-  {\normalfont\Large\bfseries\centering}{\thechapter}{1em}{}
+  {\normalfont\fontsize{""" + str(chapter_pt) + r"""pt}{""" + str(chapter_pt + 3) + r"""pt}\selectfont\bfseries\centering}{\thechapter}{1em}{}
 \titlespacing*{\chapter}{0pt}{0pt}{10pt}
 \setcounter{tocdepth}{2}
 
@@ -833,6 +854,218 @@ _FIGURE_MAP = [
     ('defl_ll',               'defl_ll.png'),
 ]
 
+
+def _repeat_longtable_headers(tex):
+    r"""Add \endfirsthead/\endhead to the first bold header row of each longtable."""
+    marker = r"\begin{longtable}"
+    pos = 0
+    while True:
+        start = tex.find(marker, pos)
+        if start < 0:
+            break
+        end = tex.find(r"\end{longtable}", start)
+        if end < 0:
+            break
+        block = tex[start:end]
+        if r"\endfirsthead" not in block and r"\endhead" not in block:
+            lines = block.splitlines()
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if (r"\textbf{" in stripped and
+                        (stripped.endswith(r"\\") or r"\[6pt]" in stripped)):
+                    repeated = "\n".join([
+                        line,
+                        r"\endfirsthead",
+                        r"\hline",
+                        line,
+                        r"\hline",
+                        r"\endhead",
+                    ])
+                    lines[i] = repeated
+                    break
+            new_block = "\n".join(lines)
+            tex = tex[:start] + new_block + tex[end:]
+            end = start + len(new_block)
+        pos = end + len(r"\end{longtable}")
+    return tex
+
+
+def _safe_float(value, default=0.0):
+    try:
+        text = str(value).replace(",", "").strip()
+        return float(text)
+    except (TypeError, ValueError):
+        return default
+
+
+def _optional_float(value):
+    if value in (None, "", "N.A.", "N/A", "---"):
+        return None
+    try:
+        result = float(str(value).replace(",", "").strip())
+        return result if math.isfinite(result) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _generate_utilization_chart(output_dict, bridge, tmp_dir):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from osdagbridge.core.reports.styles import PLOT_STYLE
+    from osdagbridge.core.utils.common import (
+        KEY_UTIL_FLEXURE, KEY_UTIL_SHEAR, KEY_UTIL_INTERACTION, KEY_UTIL_LTB,
+        KEY_DD_M_ULS_SAG, KEY_DD_MU_BOT,
+        KEY_DD_M_ULS_HOG, KEY_DD_MU_TOP, KEY_DD_M_ULS_OH, KEY_DD_MU_OH,
+        KEY_DD_PUNCH_VED, KEY_DD_VRD_C_MPA, KEY_DD_SHEAR_VED, KEY_DD_SHEAR_VRDC,
+    )
+
+    girder_values = []
+    for key in (KEY_UTIL_FLEXURE, KEY_UTIL_SHEAR, KEY_UTIL_INTERACTION, KEY_UTIL_LTB):
+        value = _optional_float(output_dict.get(key))
+        if value is not None:
+            girder_values.append(value / 100.0 if value > 10.0 else value)
+    girder_ur = max(girder_values) if girder_values else None
+
+    deck = output_dict.get("deck_report_values", {}) or {}
+    deck_values = []
+    for dem_key, cap_key in (
+        (KEY_DD_M_ULS_SAG, KEY_DD_MU_BOT),
+        (KEY_DD_M_ULS_HOG, KEY_DD_MU_TOP),
+        (KEY_DD_M_ULS_OH, KEY_DD_MU_OH),
+        (KEY_DD_PUNCH_VED, KEY_DD_VRD_C_MPA),
+        (KEY_DD_SHEAR_VED, KEY_DD_SHEAR_VRDC),
+    ):
+        dem = _optional_float(deck.get(dem_key))
+        cap = _optional_float(deck.get(cap_key))
+        if dem is not None and cap is not None and cap > 0:
+            deck_values.append(dem / cap)
+    deck_ur = max(deck_values) if deck_values else None
+
+    bracing_values = []
+    for pair in bridge.get_cb_pairs():
+        for member in ("diagonal", "chord"):
+            for force_type in ("compression", "tension"):
+                try:
+                    value = _optional_float(bridge.get_cb_efficiency(pair, member, force_type))
+                    if value is not None:
+                        bracing_values.append(value)
+                except (TypeError, ValueError):
+                    pass
+    bracing_ur = max(bracing_values) if bracing_values else None
+
+    diaphragm_values = []
+    diaphragm_results = output_dict.get("end_diaphragm_design_results", {}) or {}
+    for pair_result in diaphragm_results.values():
+        if not isinstance(pair_result, dict):
+            continue
+        for member_result in pair_result.values():
+            if not isinstance(member_result, dict):
+                continue
+            for force_result in member_result.values():
+                if not isinstance(force_result, dict):
+                    continue
+                from osdagbridge.core.bridge_types.plate_girder.results_data import _extract_osdag_summary
+                summary = _extract_osdag_summary(force_result)
+                value = _optional_float(summary.get("efficiency"))
+                if value is not None:
+                    diaphragm_values.append(value)
+    diaphragm_ur = max(diaphragm_values) if diaphragm_values else None
+
+    labels = ["Steel Plate Girders", "Concrete Deck Slab", "Cross Bracing", "End Diaphragms"]
+    ratios = [girder_ur, deck_ur, bracing_ur, diaphragm_ur]
+    plot_values = [0.0 if value is None else value for value in ratios]
+    colors = []
+    for value in ratios:
+        if value is None:
+            colors.append(PLOT_STYLE.missing_color)
+        elif value <= PLOT_STYLE.threshold:
+            colors.append(PLOT_STYLE.pass_color)
+        else:
+            colors.append(PLOT_STYLE.fail_color)
+
+    fig, ax = plt.subplots(figsize=(PLOT_STYLE.figure_width_in, PLOT_STYLE.utilization_height_in))
+    bars = ax.bar(labels, plot_values, color=colors)
+    ax.axhline(PLOT_STYLE.threshold, color=PLOT_STYLE.threshold_color,
+               linestyle="--", linewidth=1.8, label="UR = 1.0")
+    ax.set_ylabel("Utilization Ratio")
+    ax.set_title("Overall Utilization Ratio Summary")
+    valid_ratios = [value for value in ratios if value is not None]
+    chart_max = max(valid_ratios) if valid_ratios else 0.0
+    ax.set_ylim(bottom=0, top=max(1.15, chart_max * 1.15))
+    ax.grid(axis="y", alpha=0.25)
+    ax.legend(loc="upper right")
+    ax.tick_params(axis="x", labelrotation=18)
+    for bar, ratio in zip(bars, ratios):
+        label = "N/A" if ratio is None else f"{ratio:.2f}"
+        ax.text(bar.get_x() + bar.get_width() / 2.0, bar.get_height(),
+                label, ha="center", va="bottom", fontsize=PLOT_STYLE.tick_pt)
+    fig.tight_layout()
+    os.makedirs(os.path.join(tmp_dir, "images"), exist_ok=True)
+    path = os.path.join(tmp_dir, "images", "utilization_ratio_summary.png")
+    fig.savefig(path, dpi=PLOT_STYLE.dpi, bbox_inches="tight")
+    plt.close(fig)
+    return path.replace("\\", "/")
+
+
+def _generate_quantity_chart(payload_inputs, tmp_dir):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from osdagbridge.core.reports.styles import PLOT_STYLE
+
+    girder_mt = _optional_float(payload_inputs.get("steel_girders_wt_total"))
+    bracing_mt = sum(
+        value for value in (
+            _optional_float(payload_inputs.get(key)) for key in (
+                "bracing_top_wt_total", "bracing_bot_wt_total", "bracing_diag_wt_total"
+            )
+        ) if value is not None
+    )
+    diaphragm_mt = _optional_float(payload_inputs.get("end_diaphragm_wt_total"))
+
+    fig, (ax1, ax2) = plt.subplots(
+        1, 2, figsize=(PLOT_STYLE.figure_width_in, PLOT_STYLE.quantity_height_in)
+    )
+    steel_labels = ["Girders", "Cross Bracing", "End Diaphragms"]
+    steel_values = [0.0 if girder_mt is None else girder_mt,
+                    bracing_mt,
+                    0.0 if diaphragm_mt is None else diaphragm_mt]
+    bars1 = ax1.bar(steel_labels, steel_values, color=PLOT_STYLE.steel_color)
+    ax1.set_ylabel("Structural Steel Tonnage (MT)")
+    ax1.set_title("Structural Steel Tonnage")
+    ax1.tick_params(axis="x", labelrotation=18)
+    ax1.grid(axis="y", alpha=0.25)
+
+    concrete_m3 = _optional_float(payload_inputs.get("concrete_deck_vol_total"))
+    rebar_mt = _optional_float(payload_inputs.get("rebar_deck_wt_total"))
+    bars2 = ax2.bar(["Concrete", "Reinforcement Steel"],
+            [0.0 if concrete_m3 is None else concrete_m3,
+             0.0 if rebar_mt is None else rebar_mt],
+            color=[PLOT_STYLE.concrete_color, PLOT_STYLE.rebar_color])
+    ax2.set_ylabel("Concrete (m3) / Reinforcement (MT)")
+    ax2.set_title("Concrete and Reinforcement Quantities")
+    ax2.tick_params(axis="x", labelrotation=18)
+    ax2.grid(axis="y", alpha=0.25)
+    for bar, value in zip(bars1, [girder_mt, bracing_mt, diaphragm_mt]):
+        ax1.text(bar.get_x() + bar.get_width() / 2.0, bar.get_height(),
+                 "N/A" if value is None else f"{value:.2f}",
+                 ha="center", va="bottom", fontsize=PLOT_STYLE.tick_pt)
+    for bar, value, unit in zip(
+        bars2,
+        [concrete_m3, rebar_mt],
+        ["m3", "MT"],
+    ):
+        text = "N/A" if value is None else f"{value:.2f} {unit}"
+        ax2.text(bar.get_x() + bar.get_width() / 2.0, bar.get_height(),
+                 text, ha="center", va="bottom", fontsize=PLOT_STYLE.tick_pt)
+    fig.tight_layout()
+    os.makedirs(os.path.join(tmp_dir, "images"), exist_ok=True)
+    path = os.path.join(tmp_dir, "images", "material_quantity_summary.png")
+    fig.savefig(path, dpi=PLOT_STYLE.dpi, bbox_inches="tight")
+    plt.close(fig)
+    return path.replace("\\", "/")
+
 def generate_report(payload, request):
     # type: (ReportPayload, ReportRequest) -> ReportResult
     """Compile the full OsdagBridge Design Report to PDF (+ .tex source)."""
@@ -902,6 +1135,13 @@ def generate_report(payload, request):
             # ── Assemble LaTeX document (fig_paths now has tmp_dir paths) ──
             bridge = ReportDataBridge(payload.output_dict, payload.inputs, payload)
             span_m = float(payload.inputs.get(KEY_SPAN, 0) or 0)
+            try:
+                fig_paths["utilization_ratio_summary"] = _generate_utilization_chart(
+                    payload.output_dict, bridge, tmp_dir)
+                fig_paths["material_quantity_summary"] = _generate_quantity_chart(
+                    payload.inputs, tmp_dir)
+            except Exception as exc:
+                logger.warning("Could not generate report summary charts: %s", exc)
 
             doc_parts = []
             doc_parts.append(preamble(payload.metadata.project_name, payload.metadata.job_number, payload.metadata.report_date, payload.metadata.subtitle or 'Rev 0'))
@@ -924,11 +1164,11 @@ def generate_report(payload, request):
             if 'analysis' in secs:
                 doc_parts.append(ch4_analysis(payload.analysis_summary, fig_paths, bridge, span_m))
             if 'design_checks' in secs:
-                doc_parts.append(ch5_design_checks(payload.design_checks, bridge))
+                doc_parts.append(ch5_design_checks(payload.design_checks, bridge, fig_paths))
             if 'drawings' in secs and payload.options.include_figures:
                 doc_parts.append(ch6_drawings(fig_paths))
 
-            doc_parts.append(ch7_quantities(payload.inputs))
+            doc_parts.append(ch7_quantities(payload.inputs, fig_paths))
 
             mode = str(payload.inputs.get(KEY_DESIGN_MODE, "Optimized")).strip().lower()
             is_custom = mode in {"custom", "customized"}
@@ -939,13 +1179,7 @@ def generate_report(payload, request):
             doc_parts.append(references())
             doc_parts.append(r"\end{document}")
 
-            full_tex = "\n".join(doc_parts)
-
-
-            # NOTE: longtable header repetition is handled per-table in each
-            # chapter file (e.g. \endfirsthead / \endhead).  No automatic
-            # post-processing is applied here to avoid mis-ordering captions
-            # and column headings.
+            full_tex = _repeat_longtable_headers("\n".join(doc_parts))
 
             tmp_tex = os.path.join(tmp_dir, request.file_stem + '.tex')
             tmp_pdf = os.path.join(tmp_dir, request.file_stem + '.pdf')
